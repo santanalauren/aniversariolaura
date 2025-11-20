@@ -12,10 +12,7 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
         .bg-spongebob {
-            background-image: url('https://i.imgur.com/8YjS9KH.jpeg');
-            background-size: cover;
-            background-position: center;
-            background-repeat: no-repeat;
+            background-color: #C4E8FE; /* COR ALTERADA AQUI */
         }
     </style>
 </head>
@@ -49,7 +46,6 @@
             const [password, setPassword] = useState('');
             const ADMIN_PASSWORD = 'festa2024';
 
-            // LocalStorage para persistência
             useEffect(() => {
                 const urlParams = new URLSearchParams(window.location.search);
                 const token = urlParams.get('token');
