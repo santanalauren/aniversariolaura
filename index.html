@@ -19,12 +19,39 @@
 <body>
     <div id="app"></div>
 
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
     <script type="text/babel">
         const { useState, useEffect } = React;
+
+        // ====== CONFIGURAÇÃO DO FIREBASE ======
+        // SUBSTITUA COM SUAS CREDENCIAIS DO FIREBASE
+        const firebaseConfig = {
+            apiKey: "AIzaSyAtMaxqDU-1PyctKpB3m9_RZ7ZCoPtXRDw",
+            authDomain: "festa-laura.firebaseapp.com",
+            databaseURL: "https://festa-laura-default-rtdb.firebaseio.com",
+            projectId: "festa-laura",
+            storageBucket: "festa-laura.firebasestorage.app",
+            messagingSenderId: "802094712334",
+            appId: "1:802094712334:web:b02feaba53912555851e5f"
+        };
+
+        // Inicializa Firebase
+        let database;
+        try {
+            if (!firebase.apps.length) {
+                firebase.initializeApp(firebaseConfig);
+            }
+            database = firebase.database();
+        } catch (error) {
+            console.error("Erro ao inicializar Firebase:", error);
+        }
 
         const RSVPSystem = () => {
             const [view, setView] = useState('home');
@@ -34,11 +61,15 @@
             const [isAuthenticated, setIsAuthenticated] = useState(false);
             const [searchTerm, setSearchTerm] = useState('');
             const [filterStatus, setFilterStatus] = useState('all');
+            const [firebaseReady, setFirebaseReady] = useState(false);
 
             const [formData, setFormData] = useState({
                 name: '',
                 attended: true,
                 guests: 0,
+                guestNames: [],
+                hasChildren: false,
+                childrenCount: 0,
                 message: '',
                 token: ''
             });
@@ -52,37 +83,97 @@
                 if (token) {
                     setFormData(prev => ({ ...prev, token }));
                 }
+
+                // Verifica se Firebase está configurado
+                if (database) {
+                    setFirebaseReady(true);
+                }
             }, []);
 
             useEffect(() => {
-                if (isAuthenticated) {
+                if (isAuthenticated && firebaseReady) {
                     loadAttendances();
                 }
-            }, [isAuthenticated]);
+            }, [isAuthenticated, firebaseReady]);
 
             const loadAttendances = () => {
-                try {
-                    const stored = localStorage.getItem('rsvp_attendances');
-                    if (stored) {
-                        setAttendances(JSON.parse(stored));
+                if (!database) {
+                    console.error('Firebase não está configurado');
+                    return;
+                }
+
+                setLoading(true);
+                const attendancesRef = database.ref('attendances');
+                
+                attendancesRef.on('value', (snapshot) => {
+                    const data = snapshot.val();
+                    if (data) {
+                        const attendancesList = Object.keys(data).map(key => ({
+                            id: key,
+                            ...data[key]
+                        }));
+                        setAttendances(attendancesList.sort((a, b) => 
+                            new Date(b.created_at) - new Date(a.created_at)
+                        ));
+                    } else {
+                        setAttendances([]);
                     }
-                } catch (error) {
-                    console.error('Erro ao carregar:', error);
-                }
+                    setLoading(false);
+                });
+
+                return () => attendancesRef.off();
             };
 
-            const saveAttendances = (data) => {
-                try {
-                    localStorage.setItem('rsvp_attendances', JSON.stringify(data));
-                    setAttendances(data);
-                } catch (error) {
-                    console.error('Erro ao salvar:', error);
+            const saveAttendance = async (attendance) => {
+                if (!database) {
+                    throw new Error('Firebase não está configurado');
                 }
+
+                const attendancesRef = database.ref('attendances');
+                const newAttendanceRef = attendancesRef.push();
+                await newAttendanceRef.set(attendance);
+                return newAttendanceRef.key;
             };
 
-            const handleSubmitRSVP = () => {
+            const handleGuestsChange = (value) => {
+                const guestsNum = parseInt(value) || 0;
+                const newGuestNames = Array(guestsNum).fill('').map((_, i) => 
+                    formData.guestNames[i] || ''
+                );
+                setFormData({ 
+                    ...formData, 
+                    guests: value,
+                    guestNames: newGuestNames
+                });
+            };
+
+            const handleGuestNameChange = (index, value) => {
+                const newGuestNames = [...formData.guestNames];
+                newGuestNames[index] = value;
+                setFormData({ ...formData, guestNames: newGuestNames });
+            };
+
+            const handleSubmitRSVP = async () => {
+                if (!firebaseReady) {
+                    setMessage('❌ Sistema não está configurado. Entre em contato com os organizadores.');
+                    return;
+                }
+
                 if (!formData.name.trim()) {
                     setMessage('Por favor, informe seu nome');
+                    return;
+                }
+
+                if (formData.attended && formData.guests > 0) {
+                    const emptyNames = formData.guestNames.some(name => !name.trim());
+                    if (emptyNames) {
+                        setMessage('Por favor, informe o nome de todos os acompanhantes');
+                        return;
+                    }
+                }
+
+                if (formData.hasChildren && (!formData.childrenCount || formData.childrenCount <= 0)) {
+                    setMessage('Por favor, informe a quantidade de crianças');
                     return;
                 }
 
@@ -91,20 +182,19 @@
 
                 try {
                     const attendance = {
-                        id: Date.now(),
                         name: formData.name.trim(),
                         attended: formData.attended,
                         guests: parseInt(formData.guests) || 0,
+                        guestNames: formData.guestNames.filter(name => name.trim()),
+                        hasChildren: formData.hasChildren,
+                        childrenCount: formData.hasChildren ? parseInt(formData.childrenCount) : 0,
                         message: formData.message.trim(),
                         token: formData.token,
                         checked_in: false,
                         created_at: new Date().toISOString()
                     };
 
-                    const stored = localStorage.getItem('rsvp_attendances');
-                    const current = stored ? JSON.parse(stored) : [];
-                    const updated = [...current, attendance];
-                    saveAttendances(updated);
+                    await saveAttendance(attendance);
 
                     setMessage(formData.attended ? 
                         '✅ Presença confirmada com sucesso!' : 
@@ -114,6 +204,9 @@
                         name: '',
                         attended: true,
                         guests: 0,
+                        guestNames: [],
+                        hasChildren: false,
+                        childrenCount: 0,
                         message: '',
                         token: formData.token
                     });
@@ -138,19 +231,26 @@
                 }
             };
 
-            const handleCheckIn = (id) => {
-                const updated = attendances.map(a => 
-                    a.id === id ? { ...a, checked_in: !a.checked_in } : a
-                );
-                saveAttendances(updated);
+            const handleCheckIn = async (id) => {
+                if (!database) return;
+                
+                const attendance = attendances.find(a => a.id === id);
+                if (attendance) {
+                    await database.ref(`attendances/${id}`).update({
+                        checked_in: !attendance.checked_in
+                    });
+                }
             };
 
             const exportCSV = () => {
-                const headers = ['Nome', 'Confirmou', 'Acompanhantes', 'Mensagem', 'Check-in', 'Data'];
+                const headers = ['Nome', 'Confirmou', 'Acompanhantes', 'Nomes Acompanhantes', 'Tem Crianças', 'Qtd Crianças', 'Mensagem', 'Check-in', 'Data'];
                 const rows = attendances.map(a => [
                     a.name,
                     a.attended ? 'Sim' : 'Não',
                     a.guests,
+                    (a.guestNames || []).join('; '),
+                    a.hasChildren ? 'Sim' : 'Não',
+                    a.childrenCount || 0,
                     a.message || '',
                     a.checked_in ? 'Sim' : 'Não',
                     new Date(a.created_at).toLocaleString('pt-BR')
@@ -181,7 +281,8 @@
                 confirmed: attendances.filter(a => a.attended).length,
                 declined: attendances.filter(a => !a.attended).length,
                 checkedIn: attendances.filter(a => a.checked_in).length,
-                totalGuests: attendances.reduce((sum, a) => sum + (a.attended ? a.guests : 0), 0)
+                totalGuests: attendances.reduce((sum, a) => sum + (a.attended ? a.guests : 0), 0),
+                totalChildren: attendances.reduce((sum, a) => sum + (a.attended && a.hasChildren ? a.childrenCount : 0), 0)
             };
 
             if (view === 'home') {
@@ -243,6 +344,12 @@
 
                             <h2 className="text-3xl font-bold text-gray-800 mb-6 text-center">Confirme sua Presença</h2>
 
+                            {!firebaseReady && (
+                                <div className="mb-4 p-4 rounded-xl bg-red-50 text-red-800">
+                                    ⚠️ Sistema não configurado. Entre em contato com os organizadores.
+                                </div>
+                            )}
+
                             {message && (
                                 <div className={`mb-4 p-4 rounded-xl ${message.includes('✅') ? 'bg-green-50 text-green-800' : message.includes('❌') ? 'bg-red-50 text-red-800' : 'bg-blue-50 text-blue-800'}`}>
                                     {message}
@@ -293,19 +400,89 @@
                                 </div>
 
                                 {formData.attended && (
-                                    <div>
-                                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                                            Número de acompanhantes
-                                        </label>
-                                        <input
-                                            type="number"
-                                            min="0"
-                                            max="10"
-                                            value={formData.guests}
-                                            onChange={(e) => setFormData({ ...formData, guests: e.target.value })}
-                                            className="w-full px-4 py-3 rounded-xl border-2 border-gray-200 focus:border-blue-500 focus:outline-none"
-                                        />
-                                    </div>
+                                    <>
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                Número de acompanhantes
+                                            </label>
+                                            <input
+                                                type="number"
+                                                min="0"
+                                                max="10"
+                                                value={formData.guests}
+                                                onChange={(e) => handleGuestsChange(e.target.value)}
+                                                className="w-full px-4 py-3 rounded-xl border-2 border-gray-200 focus:border-blue-500 focus:outline-none"
+                                            />
+                                        </div>
+
+                                        {formData.guests > 0 && (
+                                            <div className="bg-blue-50 border-2 border-blue-200 rounded-xl p-4 space-y-3">
+                                                <p className="text-sm font-semibold text-blue-800 mb-2">
+                                                    Nome dos acompanhantes *
+                                                </p>
+                                                {Array.from({ length: parseInt(formData.guests) || 0 }).map((_, index) => (
+                                                    <input
+                                                        key={index}
+                                                        type="text"
+                                                        value={formData.guestNames[index] || ''}
+                                                        onChange={(e) => handleGuestNameChange(index, e.target.value)}
+                                                        placeholder={`Nome do acompanhante ${index + 1}`}
+                                                        className="w-full px-4 py-3 rounded-xl border-2 border-blue-200 focus:border-blue-500 focus:outline-none"
+                                                    />
+                                                ))}
+                                            </div>
+                                        )}
+
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                Tem crianças na lista? * 👶
+                                            </label>
+                                            <div className="grid grid-cols-2 gap-3">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setFormData({ ...formData, hasChildren: true })}
+                                                    className={`py-3 px-4 rounded-xl border-2 font-medium transition-all flex items-center justify-center gap-2 ${
+                                                        formData.hasChildren
+                                                            ? 'border-pink-500 bg-pink-50 text-pink-700'
+                                                            : 'border-gray-200 text-gray-600 hover:border-gray-300'
+                                                    }`}
+                                                >
+                                                    ✓ Sim
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setFormData({ ...formData, hasChildren: false, childrenCount: 0 })}
+                                                    className={`py-3 px-4 rounded-xl border-2 font-medium transition-all flex items-center justify-center gap-2 ${
+                                                        !formData.hasChildren
+                                                            ? 'border-gray-500 bg-gray-50 text-gray-700'
+                                                            : 'border-gray-200 text-gray-600 hover:border-gray-300'
+                                                    }`}
+                                                >
+                                                    ✗ Não
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {formData.hasChildren && (
+                                            <div className="bg-pink-50 border-2 border-pink-200 rounded-xl p-4">
+                                                <label className="block text-sm font-medium text-pink-800 mb-2">
+                                                    Quantas crianças? * 🎁
+                                                </label>
+                                                <input
+                                                    type="number"
+                                                    min="1"
+                                                    max="10"
+                                                    value={formData.childrenCount}
+                                                    onChange={(e) => setFormData({ ...formData, childrenCount: e.target.value })}
+                                                    className="w-full px-4 py-3 rounded-xl border-2 border-pink-200 focus:border-pink-500 focus:outline-none"
+                                                    placeholder="Número de crianças"
+                                                />
+                                                <p className="text-xs text-pink-700 mt-2">
+                                                    Essa informação nos ajuda a preparar as lembrancinhas! 🎈
+                                                </p>
+                                            </div>
+                                        )}
+                                    </>
                                 )}
 
                                 <div>
@@ -323,7 +500,7 @@
 
                                 <button
                                     onClick={handleSubmitRSVP}
-                                    disabled={loading}
+                                    disabled={loading || !firebaseReady}
                                     className="w-full bg-gradient-to-r from-blue-500 to-cyan-600 text-white font-bold py-4 px-6 rounded-xl hover:from-blue-600 hover:to-cyan-700 transition-all transform hover:scale-105 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                     {loading ? 'Enviando...' : 'Enviar Confirmação'}
@@ -406,7 +583,13 @@
                                     </button>
                                 </div>
 
-                                <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+                                {!firebaseReady && (
+                                    <div className="mb-6 p-4 rounded-xl bg-red-50 text-red-800">
+                                        ⚠️ Firebase não configurado. Configure as credenciais no código.
+                                    </div>
+                                )}
+
+                                <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
                                     <div className="bg-blue-50 rounded-xl p-4">
                                         <p className="text-sm text-blue-600 mb-1">Total</p>
                                         <p className="text-2xl font-bold text-blue-800">{stats.total}</p>
@@ -426,6 +609,10 @@
                                     <div className="bg-orange-50 rounded-xl p-4">
                                         <p className="text-sm text-orange-600 mb-1">Acompanhantes</p>
                                         <p className="text-2xl font-bold text-orange-800">{stats.totalGuests}</p>
+                                    </div>
+                                    <div className="bg-pink-50 rounded-xl p-4">
+                                        <p className="text-sm text-pink-600 mb-1">Crianças 👶</p>
+                                        <p className="text-2xl font-bold text-pink-800">{stats.totalChildren}</p>
                                     </div>
                                 </div>
 
@@ -483,11 +670,23 @@
                                                                 ✓ Check-in
                                                             </span>
                                                         )}
+                                                        {attendance.hasChildren && (
+                                                            <span className="bg-pink-100 text-pink-700 text-xs px-3 py-1 rounded-full font-medium">
+                                                                👶 {attendance.childrenCount} criança(s)
+                                                            </span>
+                                                        )}
                                                     </div>
                                                     {attendance.guests > 0 && (
-                                                        <p className="text-sm text-gray-600 mb-1">
-                                                            👥 {attendance.guests} acompanhante(s)
-                                                        </p>
+                                                        <div className="mb-1">
+                                                            <p className="text-sm text-gray-600 font-medium">
+                                                                👥 {attendance.guests} acompanhante(s):
+                                                            </p>
+                                                            {attendance.guestNames && attendance.guestNames.length > 0 && (
+                                                                <p className="text-sm text-gray-700 ml-5">
+                                                                    {attendance.guestNames.join(', ')}
+                                                                </p>
+                                                            )}
+                                                        </div>
                                                     )}
                                                     {attendance.message && (
                                                         <p className="text-sm text-gray-600 italic">"{attendance.message}"</p>
